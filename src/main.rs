@@ -43,7 +43,8 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use regex::Regex;
 use parking_lot::RwLock;
-use ignore::Walk;
+use ignore::WalkBuilder;
+use ignore::types::TypesBuilder;
 use hyper::Client;
 
 /// For libxml2 FFI.
@@ -88,9 +89,10 @@ fn extract_schema_url(path: &Path) -> String {
 	    .expect("failed to compile schemaLocation regex");
     }
 
-    let f = File::open(path).unwrap();
+    let f = File::open(path)
+        .expect(&format!("failed to open file {}", path.display()));
     for line in BufReader::new(f).lines() {
-        if let Some(caps) = RE.captures(&line.unwrap()) {
+        if let Some(caps) = RE.captures(&line.expect("failed to read line from file")) {
             return caps[1].to_string();
         }
     }
@@ -207,19 +209,26 @@ fn main() {
         xmlInitGlobals();
     }
 
-    rayon::scope(|s| {
-        for result in Walk::new(&args.arg_dir) {
-            if let Ok(entry) = result {
-                s.spawn(move |_| {
-                    // TODO I'm having trouble moving the spawn inward to just validate.
+    let extension_glob = format!("*.{}", extension_str);
+    let mut types_builder = TypesBuilder::new();
+    types_builder.add("cmdi", &extension_glob)
+         .expect(&format!("failed to add file extension {}", extension_str));
+
+    let types = types_builder.select("cmdi").build().expect("failed to select cmdi");
+
+    rayon::scope(|scope| {
+        for result in WalkBuilder::new(&args.arg_dir).types(types).build() {
+            // TODO I'm having trouble moving the spawn inward to just validate.
+            scope.spawn(move |_| {
+                if let Ok(entry) = result {
                     let path = entry.path();
-                    if let Some(extension) = path.extension() {
-                        if extension.to_str().unwrap() == extension_str {
+                    if let Some(file_type) = entry.file_type() {
+                        if file_type.is_file() {
                             validate(path);
                         }
                     }
-                });
-            }
+                }
+            });
         }
     });
 }
